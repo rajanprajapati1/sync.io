@@ -3,7 +3,7 @@
  * Handles song search and song details fetching
  */
 
-const SAAVN_API_BASE = process.env.URL;
+const SAAVN_API_BASE = 'https://saavn.sumit.co/api';
 
 /**
  * Search for songs using Saavn API
