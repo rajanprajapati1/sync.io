@@ -24,9 +24,12 @@ export class SyncController {
     this.isDestroyed = false;
     this.lastUpdateTime = 0; // Track when we last updated to prevent conflicts
     this.syncDebounceTimeout = null;
+    this.continuousSyncInterval = null; // For continuous time sync
+    this.isInitialSync = true; // Track if this is the first sync
 
     // Bind methods to preserve context
     this.handleRoomStateChange = this.handleRoomStateChange.bind(this);
+    this.continuousTimeSync = this.continuousTimeSync.bind(this);
   }
 
   /**
@@ -37,7 +40,51 @@ export class SyncController {
 
     this.audioElement = audioElement;
     this.setupRoomListener();
+    this.startContinuousSync();
     return this;
+  }
+
+  /**
+   * Start continuous sync for real-time synchronization
+   */
+  startContinuousSync() {
+    if (this.continuousSyncInterval) {
+      clearInterval(this.continuousSyncInterval);
+    }
+
+    // Continuous sync every 2 seconds for real-time updates
+    this.continuousSyncInterval = setInterval(() => {
+      if (!this.isDestroyed && this.audioElement && this.lastKnownState) {
+        this.continuousTimeSync();
+      }
+    }, 2000);
+  }
+
+  /**
+   * Continuous time sync to keep all devices in perfect sync
+   */
+  continuousTimeSync() {
+    if (!this.audioElement || !this.lastKnownState || this.isDestroyed) return;
+
+    const audio = this.audioElement;
+    const state = this.lastKnownState;
+
+    // Only sync if audio is playing and we have a valid state
+    if (state.isPlaying && !audio.paused && audio.readyState >= 2) {
+      const now = Date.now();
+      const timeSinceUpdate = state.timestamp ? (now - state.timestamp) / 1000 : 0;
+      
+      // Calculate expected current time
+      const expectedTime = state.currentTime + timeSinceUpdate;
+      const actualTime = audio.currentTime;
+      const timeDifference = Math.abs(expectedTime - actualTime);
+
+      // Sync if drift is more than 0.5 seconds
+      if (timeDifference > 0.5) {
+        console.log(`Continuous sync correction: ${actualTime.toFixed(2)}s -> ${expectedTime.toFixed(2)}s`);
+        audio.currentTime = Math.max(0, Math.min(expectedTime, audio.duration || 0));
+      }
+    }
   }
 
   /**
@@ -124,10 +171,11 @@ export class SyncController {
     }
 
     // Check if this is a meaningful state change that requires audio sync
+    // CRITICAL FIX: Lower threshold for better real-time sync
     const shouldSync = !this.lastKnownState ||
       this.lastKnownState.isPlaying !== newState.isPlaying ||
       this.lastKnownState.currentSong?.url !== newState.currentSong?.url ||
-      Math.abs(this.lastKnownState.currentTime - newState.currentTime) > 2;
+      Math.abs(this.lastKnownState.currentTime - newState.currentTime) > 0.5; // Much more sensitive
 
     // Store previous state for comparison
     const prevState = this.lastKnownState;
@@ -271,7 +319,7 @@ export class SyncController {
   }
 
   /**
-   * Sync time first to avoid conflicts
+   * Sync time with proper precision for real-time sync
    */
   syncTimeFirst(audio, state) {
     try {
@@ -279,19 +327,19 @@ export class SyncController {
         const now = Date.now();
         const timeSinceUpdate = state.timestamp ? (now - state.timestamp) / 1000 : 0;
 
-        // Be more conservative with time compensation to avoid jumping
+        // Calculate target time with network compensation
         let targetTime = state.currentTime;
-
-        // Only add compensation if the state is recent (< 5 seconds old) and audio should be playing
-        if (state.isPlaying && timeSinceUpdate < 5) {
+        
+        // Add time compensation if audio should be playing and state is recent
+        if (state.isPlaying && timeSinceUpdate < 10) {
           targetTime = state.currentTime + timeSinceUpdate;
         }
 
         targetTime = Math.max(0, Math.min(targetTime, audio.duration || 0));
         const timeDifference = Math.abs(audio.currentTime - targetTime);
 
-        // Only sync if difference is significant (> 3 seconds) to avoid constant jumping
-        if (timeDifference > 3) {
+        // CRITICAL FIX: Lower threshold for better sync (was 3 seconds, now 1 second)
+        if (timeDifference > 1) {
           console.log(`Syncing time: ${audio.currentTime.toFixed(2)}s -> ${targetTime.toFixed(2)}s (diff: ${timeDifference.toFixed(2)}s)`);
           audio.currentTime = targetTime;
         }
@@ -547,6 +595,18 @@ export class SyncController {
 
     // Clean up Firebase listener
     this.cleanupRoomListener();
+
+    // Clean up continuous sync interval
+    if (this.continuousSyncInterval) {
+      clearInterval(this.continuousSyncInterval);
+      this.continuousSyncInterval = null;
+    }
+
+    // Clean up debounce timeout
+    if (this.syncDebounceTimeout) {
+      clearTimeout(this.syncDebounceTimeout);
+      this.syncDebounceTimeout = null;
+    }
 
     // Reset state
     this.syncState.isConnected = false;
